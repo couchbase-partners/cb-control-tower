@@ -60,6 +60,8 @@ Resources:
           from botocore.vendored import requests
 
           secretsmanager = boto3.client('secretsmanager')
+          parameterstore = boto3.client('ssm')
+
           logger = logging.getLogger()
           logger.setLevel(logging.INFO)
 
@@ -72,7 +74,7 @@ Resources:
               logger.info('EVENT Received: {}'.format(event))
               response_data = {}
               eventType = event['RequestType']
-              bootstrap = event['ResourceProperties']['bootstrapValue']
+              bootstrap = parameterstore.get_parameter(event['ResourceProperties']['bootstrapValue']).Parameter.Value
               password = event['ResourceProperties']['password']
               secretArn = event['ResourceProperties']['secretArn']
               accId = event['ResourceProperties']['accId']
