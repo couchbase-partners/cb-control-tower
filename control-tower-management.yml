@@ -73,7 +73,7 @@ Resources:
       Description: StackSet for creating Integration Role
       StackSetName: CB-MemberStackSet
       Parameters:
-        - ParameterKey: IAMRoleName
+        - ParameterKey: ParentAccountId
           ParameterValue: SomeValue
       PermissionModel: SELF_MANAGED
       AdministrationRoleARN: !Join
