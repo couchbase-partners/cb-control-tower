@@ -4,11 +4,11 @@ Parameters:
   ManagedTemplateURL:
     Description: Base URL for Couchbase's CloudFormation template for managed accounts
     Type: String
-    Default: ''
-  ManagementTemplateURL:
-    Description: Base URL for Couchbase's CloudFormation template for management account
+    Default: 'https://cb-control-tower.s3.us-west-2.amazonaws.com/control-tower-managed.yml'
+  SharedServicesTemplateURL:
+    Description: Base URL for Couchbase's CloudFormation template for Shared Services account
     Type: String
-    Default: ''
+    Default: 'https://cb-control-tower.s3.us-west-2.amazonaws.com/control-tower-shared-services-stackset.yml'
   CouchbaseBootstrapParameter:
     Description: System Manager Parameter that contains the couchbase server rally host url
     Type: AWS::SSM::Parameter::Value<String>
@@ -112,7 +112,7 @@ Resources:
         - CAPABILITY_NAMED_IAM
         - CAPABILITY_IAM
         - CAPABILITY_AUTO_EXPAND
-      TemplateURL: !Ref 'ManagementTemplateURL'
+      TemplateURL: !Ref 'SharedServicesTemplateURL'
   CaptureControlTowerLifeCycleEvents:
     Type: AWS::Events::Rule
     Properties:
