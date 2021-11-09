@@ -37,7 +37,7 @@ Resources:
             - '", "password":"'
             - Ref: Password
             - '", "bootstrap":"'
-            - Ref: Bootstrap
+            - !Sub '{{resolve:ssm:${Bootstrap}}}'
             - '"}'
 
   CouchbaseUserLambda:
@@ -74,7 +74,10 @@ Resources:
               logger.info('EVENT Received: {}'.format(event))
               response_data = {}
               eventType = event['RequestType']
-              bootstrap = parameterstore.get_parameter(event['ResourceProperties']['bootstrapValue']).Parameter.Value
+              bootstrap = event['ResourceProperties']['bootstrapValue']
+              bootstrap = parameterstore.get_parameter(Name=bootstrap)
+              logger.info('Bootstrap: {}'.format(bootstrap))
+              bootstrap = bootstrap['Parameter']['Value']
               password = event['ResourceProperties']['password']
               secretArn = event['ResourceProperties']['secretArn']
               accId = event['ResourceProperties']['accId']
@@ -177,6 +180,15 @@ Resources:
                 Action: secretsmanager:GetSecretValue
                 Resource: 
                   - !Ref "CouchbaseSecretArn"
+        - PolicyName: CouchbaseSSMAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+                - Effect: Allow
+                  Action:
+                    - ssm:GetParameter
+                  Resource:
+                    - '*'
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
 

@@ -1,10 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: This CloudFormation template can be used to create a Cross-Account Role that allows access to Couchbase Server.
 Parameters:
-  IAMRoleName:
-    Description: Customize the name of IAM Cross Account role for Couchbase integration
-    Type: String
-    Default: IAM_R_COUCHBASE_SECURITY
   ParentAccountId:
     Description: Customize the name of IAM Cross Account role for Couchbase integration
     Type: String
@@ -18,9 +14,13 @@ Resources:
           - Effect: Allow
             Principal:
               AWS:
-                - !Sub 'arn:${AWS::Partition}:iam::${ParentAccountId}:role/${IAMRoleName}'
+                - !Sub 'arn:${AWS::Partition}:iam::${ParentAccountId}:role/CB-Access-${AWS::AccountId}'
             Action:
               - sts:AssumeRole
-      RoleName: IAM_R_COUCHBASE_SECURITY_XA
+      RoleName:         
+        Fn::Join:
+          - "-"
+          - - CB-Access
+          - Ref: AWS::AccountId
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/SecurityAudit
