@@ -71,7 +71,7 @@ Resources:
     Type: AWS::CloudFormation::StackSet
     Properties:
       Description: StackSet for creating Integration Role
-      StackSetName: MemberRolev1
+      StackSetName: CB-MemberStackSet
       Parameters:
         - ParameterKey: IAMRoleName
           ParameterValue: SomeValue
@@ -91,7 +91,7 @@ Resources:
     Type: AWS::CloudFormation::StackSet
     Properties:
       Description: StackSet for creating Couchbase Secret and Role
-      StackSetName: MainRolev1
+      StackSetName: CB-SharedServicesStackSet
       Parameters:
         - ParameterKey: ChildAccountId
           ParameterValue: SomeValue
@@ -192,6 +192,7 @@ Resources:
               regionName = eventDetails['awsRegion']
               eventName = eventDetails['eventName']
               srvEventDetails = eventDetails['serviceEventDetails']
+              passwd = password_generator()
               if eventName == 'CreateManagedAccount':
                   newAccInfo = {}
                   logger.info('Event Processed Sucessfully')
@@ -209,7 +210,7 @@ Resources:
                               'UsePreviousValue': False
                           }, {
                               'ParameterKey': 'Bootstrap',
-                              'ParameterValue': bootstrap,
+                              'ParameterValue': bootstrapParamName,
                               'UsePreviousValue': False
                           }, {
                               'ParameterKey': 'ChildAccountId',
@@ -217,14 +218,18 @@ Resources:
                               'UsePreviousValue': False
                           }, {
                               'ParameterKey': 'CouchbaseSecretArn',
-                              'ParamterValue': couchbaseSecretArn,
+                              'ParameterValue': couchbaseSecretArn,
                               'UsePreviousValue': False
                           }])
                       except Exception as e:
                           logger.error('Unable to launch in: {}, REASON: {}'.format(managementStackSet, e))
                       try:
                           # 3.  Create StackSet for Managed Account Passing parameters: ParentAccountId and the IAmRole name which should be CB-Access-{accId}
-                          result = cloudformation.create_stack_instances(StackSetName=managedStackSet, Accounts=[accId], Regions=[regionName])
+                          result = cloudformation.create_stack_instances(StackSetName=managedStackSet, Accounts=[accId], Regions=[regionName], ParameterOverrides=[{
+                              'ParameterKey': 'ParentAccountId',
+                              'ParameterValue': sharedServicesAccountNumber,
+                              'UsePreviousValue': False
+                          }])
                           logger.info('Processed {} Sucessfully'.format(managedStackSet))
                       except Exception as e:
                           logger.error('Unable to launch in:{}, REASON: {}'.format(managedStackSet, e))
