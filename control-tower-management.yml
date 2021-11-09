@@ -1,0 +1,321 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS Control Tower Lifecycle Events for Couchbase
+Parameters:
+  ManagedTemplateURL:
+    Description: Base URL for Couchbase's CloudFormation template for managed accounts
+    Type: String
+    Default: ''
+  ManagementTemplateURL:
+    Description: Base URL for Couchbase's CloudFormation template for management account
+    Type: String
+    Default: ''
+  CouchbaseBootstrapParameter:
+    Description: System Manager Parameter that contains the couchbase server rally host url
+    Type: AWS::SSM::Parameter::Value<String>
+  CouchbaseSecretArn:
+    Description: Secret manager secret that contains Couchbase Server Connection information
+    Type: String
+  SharedServicesAccountId:
+    Description: Account Id of the Shared Services account that contains Couchbase Server
+    Type: String
+Resources:
+  ControlTowerKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: This is KMS Key Id used to encrypt/decrypt the Secret
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: key-default-1
+        Statement:
+          - Sid: Allow administration of the key
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action:
+              - kms:Create*
+              - kms:Describe*
+              - kms:Enable*
+              - kms:List*
+              - kms:Put*
+              - kms:Update*
+              - kms:Revoke*
+              - kms:Disable*
+              - kms:Get*
+              - kms:Delete*
+              - kms:ScheduleKeyDeletion
+              - kms:CancelKeyDeletion
+            Resource: '*'
+          - Sid: Allow use of the key
+            Effect: Allow
+            Principal:
+              AWS: !Sub '${AWS::AccountId}'
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt
+              - kms:GenerateDataKey
+              - kms:CreateGrant
+              - kms:DescribeKey
+            Resource: '*'
+            Condition:
+              StringEquals:
+                kms:ViaService: !Sub 'secretsmanager.${AWS::Region}.amazonaws.com'
+                kms:CallerAccount: !Sub '${AWS::AccountId}'
+  ControlTowerKMSAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/Control-Tower-${AWS::StackName}'
+      TargetKeyId: !Ref 'ControlTowerKMSKey'
+  StackSet:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      Description: StackSet for creating Integration Role
+      StackSetName: MemberRolev1
+      Parameters:
+        - ParameterKey: IAMRoleName
+          ParameterValue: SomeValue
+      PermissionModel: SELF_MANAGED
+      AdministrationRoleARN: !Join
+        - ':'
+        - - 'arn:aws:iam:'
+          - !Ref 'AWS::AccountId'
+          - role/service-role/AWSControlTowerStackSetRole
+      ExecutionRoleName: AWSControlTowerExecution
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
+        - CAPABILITY_IAM
+        - CAPABILITY_AUTO_EXPAND
+      TemplateURL: !Ref 'ManagedTemplateURL'
+  ManagementStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      Description: StackSet for creating Couchbase Secret and Role
+      StackSetName: MainRolev1
+      Parameters:
+        - ParameterKey: ChildAccountId
+          ParameterValue: SomeValue
+        - ParameterKey: Password
+          ParameterValue: SomePassword
+        - ParameterKey: Bootstrap
+          ParameterValue: SomeUrl
+        - ParameterKey: CouchbaseSecretArn
+          ParameterValue: SomeValue
+      PermissionModel: SELF_MANAGED
+      AdministrationRoleARN: !Join
+        - ':'
+        - - 'arn:aws:iam:'
+          - !Ref 'AWS::AccountId'
+          - role/service-role/AWSControlTowerStackSetRole
+      ExecutionRoleName: AWSControlTowerExecution
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
+        - CAPABILITY_IAM
+        - CAPABILITY_AUTO_EXPAND
+      TemplateURL: !Ref 'ManagementTemplateURL'
+  CaptureControlTowerLifeCycleEvents:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Capture Control Tower LifeCycle Events for Couchbase and Trigger an Action
+      EventPattern:
+        detail:
+          eventName:
+            - CreateManagedAccount
+            - UpdateManagedAccount
+            - EnableGuardrail
+            - DisableGuardrail
+            - SetupLandingZone
+            - UpdateLandingZone
+            - RegisterOrganizationalUnit
+            - DeregisterOrganizationalUnit
+          eventSource:
+            - controltower.amazonaws.com
+        detail-type:
+          - AWS Service Event via CloudTrail
+        source:
+          - aws.controltower
+      Name: CouchbaseCaptureControlTowerLifeCycleEvents
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt 'TriggerCustomizationsOnLifeCycleEvent.Arn'
+          Id: IDCaptureControlTowerLifeCycleEvents
+  TriggerCustomizationsOnLifeCycleEvent:
+    Type: AWS::Lambda::Function
+    Properties:
+      Environment:
+        Variables:
+          COUCHBASE_BOOTSTRAP_PARAM: !Ref 'CouchbaseBootstrapParameter'
+          COUCHBASE_SECRET_ARN: !Ref 'CouchbaseSecretArn'
+          MANAGED_TEMPLATE_URL: !Ref 'ManagedTemplateURL'
+          SHARED_SERVICES_ACCOUNT_ID: !Ref 'SharedServicesAccountId'
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+          import logging
+          import requests
+          from requests.auth import HTTPBasicAuth
+          import string
+          import random
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          managedStackSet = "CB-MemberStackSet"
+          managementStackSet = "CB-SharedServicesStackSet"
+          result = {"ResponseMetadata":{"HTTPStatusCode":"400"}}
+          secretsmanager = boto3.client('secretsmanager')
+          cloudformation = boto3.client('cloudformation')
+          parameterstore = boto3.client('ssm')
+          bootstrapParamName = os.environ['COUCHBASE_BOOTSTRAP_PARAM']
+          couchbaseSecretArn = os.environ['COUCHBASE_SECRET_ARN']
+          templateUrl = os.environ['MANAGED_TEMPLATE_URL']
+          sharedServicesAccountNumber = os.environ['SHARED_SERVICES_ACCOUNT_ID']
+
+
+          logger.info('Template Url: {}'.format(templateUrl))
+          logger.info('couchbaseSecretArn: {}'.format(couchbaseSecretArn))
+          logger.info('bootstrap Param: {}'.format(bootstrapParamName))
+
+          def password_generator(size=20, chars=string.ascii_uppercase+string.digits+string.ascii_lowercase+"@%+!#$^?~-_"):
+              return ''.join(random.SystemRandom().choice(chars) for _ in range(size))
+
+          def get_secret_value(key=couchbaseSecretArn):
+              output = {}
+              output = json.loads(secretsmanager.get_secret_value(SecretId=couchbaseSecretArn)['SecretString'])
+              return(output)
+
+          def lambda_handler(event, context):          
+                  
+              masterAcct = event['account']
+              eventDetails = event['detail']
+              regionName = eventDetails['awsRegion']
+              eventName = eventDetails['eventName']
+              srvEventDetails = eventDetails['serviceEventDetails']
+              if eventName == 'CreateManagedAccount':
+                  newAccInfo = {}
+                  logger.info('Event Processed Sucessfully')
+                  if eventName == 'CreateManagedAccount':
+                      newAccInfo = srvEventDetails['createManagedAccountStatus']
+                  cmdStatus = newAccInfo['state']
+                  if cmdStatus == 'SUCCEEDED':
+                      'Sucessful event recieved'
+                      accId = newAccInfo['account']['accountId']
+                      try:
+                          # 2.  Create Stackset for Shared Services Account (Create Secret and role) will need to override parameters
+                          result = cloudformation.create_stack_instances(StackSetName=managementStackSet, Accounts=[sharedServicesAccountNumber], Regions=[regionName], ParameterOverrides=[{
+                              'ParameterKey': 'Password',
+                              'ParameterValue': passwd,
+                              'UsePreviousValue': False
+                          }, {
+                              'ParameterKey': 'Bootstrap',
+                              'ParameterValue': bootstrap,
+                              'UsePreviousValue': False
+                          }, {
+                              'ParameterKey': 'ChildAccountId',
+                              'ParameterValue': accId,
+                              'UsePreviousValue': False
+                          }, {
+                              'ParameterKey': 'CouchbaseSecretArn',
+                              'ParamterValue': couchbaseSecretArn,
+                              'UsePreviousValue': False
+                          }])
+                      except Exception as e:
+                          logger.error('Unable to launch in: {}, REASON: {}'.format(managementStackSet, e))
+                      try:
+                          # 3.  Create StackSet for Managed Account Passing parameters: ParentAccountId and the IAmRole name which should be CB-Access-{accId}
+                          result = cloudformation.create_stack_instances(StackSetName=managedStackSet, Accounts=[accId], Regions=[regionName])
+                          logger.info('Processed {} Sucessfully'.format(managedStackSet))
+                      except Exception as e:
+                          logger.error('Unable to launch in:{}, REASON: {}'.format(managedStackSet, e))
+                  else:
+                      'Unsucessful event recieved'
+                      logger.info('Unsucessful Event Recieved. SKIPPING :{}'.format(event))
+                      return(False)
+              else:
+                  logger.info('Control Tower Event Captured :{}'.format(event))
+      Handler: index.lambda_handler
+      MemorySize: 256
+      Role: !GetAtt 'TriggerLifecycleEventLambdaRole.Arn'
+      Runtime: python3.7
+      Timeout: 60
+  TriggerLifecycleEventLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowLambdaAssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CouchbaseLifecycleLambdaGetSecretPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Resource:
+                  - !Ref 'CouchbaseSecretArn'
+                Action:
+                  - secretsmanager:GetSecretValue
+        - PolicyName: CouchbaseLifecycleSSMParameterPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource:
+                  - '*'
+        - PolicyName: CouchbaseLifecycleCreatePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:CreateSecret
+                  - iam:CreateRole
+                  - iam:CreatePolicy
+                Resource:
+                  - '*'
+        - PolicyName: StacksetCreationPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - !Join
+                    - ':'
+                    - - 'arn:aws:iam:'
+                      - !Ref 'AWS::AccountId'
+                      - role/service-role/AWSControlTowerStackSetRole
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateStackInstances
+                Resource:
+                  - !Join
+                    - ':'
+                    - - arn:aws:cloudformation
+                      - !Ref 'AWS::Region'
+                      - !Ref 'AWS::AccountId'
+                      - stackset/MemberRolev1:*
+                  - !Join
+                    - ':'
+                    - - arn:aws:cloudformation
+                      - !Ref 'AWS::Region'
+                      - !Ref 'AWS::AccountId'
+                      - stackset/MainRolev1:*
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+  PermissionForEventsToInvokeLambdachk:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt 'TriggerCustomizationsOnLifeCycleEvent.Arn'
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt 'CaptureControlTowerLifeCycleEvents.Arn'

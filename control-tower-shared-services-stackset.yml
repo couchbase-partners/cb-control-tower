@@ -1,0 +1,210 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description:
+  This CloudFormation template can be used to create a Cross-Account Role
+  that allows access to Couchbase Server.
+
+Parameters:
+  ChildAccountId:
+    Description: The child account id to create secret and role for
+    Type: String
+  Password:
+    Description: The Couchbase server password generated for child account.
+    Type: String
+  Bootstrap:
+    Description: The Bootstrap Url for Couchbase Server.
+    Type: String
+  CouchbaseSecretArn:
+    Description: The ARN for the Couchbase Admin Secret
+    Type: String
+
+Resources:
+  CouchbaseSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name:
+        Fn::Join:
+          - ""
+          - - CB-Access-
+            - Ref: ChildAccountId
+            - "-CouchbaseSecret"
+      Description: Couchbase Admin Username/Password and Bootstrap URL Secret
+      SecretString:
+        Fn::Join:
+          - ""
+          - - '{"username": "cb-user@'
+            - Ref: ChildAccountId
+            - '", "password":"'
+            - Ref: Password
+            - '", "bootstrap":"'
+            - Ref: Bootstrap
+            - '"}'
+
+  CouchbaseUserLambda:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Handler: index.handler
+      Runtime: python3.7
+      MemorySize: 256
+      Role: !GetAtt "CouchbaseUserLambdaExecutionRole.Arn"
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import botocore
+          import os
+          import cfnresponse
+          from requests.auth import HTTPBasicAuth
+          import logging
+          from botocore.vendored import requests
+
+          secretsmanager = boto3.client('secretsmanager')
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def get_secret_value(key):
+              output = {}
+              output = json.loads(secretsmanager.get_secret_value(SecretId=key)['SecretString'])
+              return(output)
+
+          def handler(event, context):
+              logger.info('EVENT Received: {}'.format(event))
+              response_data = {}
+              eventType = event['RequestType']
+              bootstrap = event['ResourceProperties']['bootstrapValue']
+              password = event['ResourceProperties']['password']
+              secretArn = event['ResourceProperties']['secretArn']
+              accId = event['ResourceProperties']['accId']
+              username = 'cb-user@{}'.format(accId)
+              cbSecret = get_secret_value(secretArn)
+              couchbaseUrl = 'http://{}:8091'.format(bootstrap)
+              fullUrl = '{}/settings/rbac/users/local/{}'.format(couchbaseUrl, username)
+              adminUser = cbSecret['username']
+              adminPass = cbSecret['password']              
+              if eventType != 'Delete':
+                  logger.info('Event = ' + event['RequestType'])
+                  try:
+                      # curl -X PUT {couchbaseUrl}/settings/rbac/users/local/{username} -u {cbSecret.username}:{cbSecret.password} -d password={passwd} -d roles=[roles.Value]
+                      r = requests.put(fullUrl, auth=HTTPBasicAuth(adminUser, adminPass), data={'password': password})
+                      logger.info("Result: {}".format(r))
+                      cfnsend(event, context, 'SUCCESS', response_data)
+                  except Exception as e:
+                      logger.error('Unable to generate username/password.  REASON: {}'.format(e))
+                      cfnsend(event, context, "FAILED", response_data)
+                  return "Success"
+              else:
+                  logger.info('Event is delete.  Deleting user')
+                  try:
+                      r = requests.delete(fullUrl, auth=HTTPBasicAuth(adminUser, adminPass))
+                      logger.info("Result: {}".format(r))
+                      cfnsend(event, context, 'SUCCESS', response_data)
+                  except Exception as e:
+                      logger.error('Unable to remove username/password.  REASON:{}'.format(e))
+                      cfnsend(event, context, "FAILED", response_data)
+                  return event
+              cfnsend(event, context, 'SUCCESS', response_data)
+              return "Success"
+
+          def cfnsend(event, context, responseStatus, responseData, reason=None):
+              if 'ResponseURL' in event:
+                  responseUrl = event['ResponseURL']
+                  # Build out the response json
+                  responseBody = {}
+                  responseBody['Status'] = responseStatus
+                  responseBody['Reason'] = reason or 'CWL Log Stream =' + context.log_stream_name
+                  responseBody['PhysicalResourceId'] = context.log_stream_name
+                  responseBody['StackId'] = event['StackId']
+                  responseBody['RequestId'] = event['RequestId']
+                  responseBody['LogicalResourceId'] = event['LogicalResourceId']
+                  responseBody['Data'] = responseData
+                  json_responseBody = json.dumps(responseBody)
+
+                  logger.info('Response body: {}'.format(json_responseBody))
+
+                  headers = {
+                      'content-type': '',
+                      'content-length': str(len(json_responseBody))
+                  }
+                  # Send response back to CFN
+                  try:
+                      response = requests.put(responseUrl,
+                                              data=json_responseBody,
+                                              headers=headers)
+                      logger.info('Status code: {}'.format(response.reason))
+                  except Exception as e:
+                      logger.info('send(..) failed executing requests.put(..):  {}'.format(str(e)))
+
+  CreateCouchbaseUser:
+    Type: "Custom::CouchbaseUser"
+    DependsOn:
+      - CouchbaseUserLambdaExecutePermission
+    Properties:
+      ServiceToken: !GetAtt "CouchbaseUserLambda.Arn"
+      bootstrapValue: !Ref Bootstrap
+      password: !Ref Password
+      accId: !Ref ChildAccountId
+      secretArn: !Ref CouchbaseSecretArn
+
+  CouchbaseUserLambdaExecutePermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt "CouchbaseUserLambda.Arn"
+      Principal: "cloudformation.amazonaws.com"
+      SourceAccount: !Ref "AWS::AccountId"
+      
+  CouchbaseUserLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "CouchbaseUserLambdaExecutionRole-${AWS::Region}-${ChildAccountId}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: CouchbaseSecretAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: 
+                  - !Ref "CouchbaseSecretArn"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  CouchbaseSecurityMember:
+    Type: AWS::IAM::Role
+    DependsOn:
+      - CreateCouchbaseUser
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                - !Sub 'arn:${AWS::Partition}:iam::${ChildAccountId}:root'
+            Action: 
+              - sts:AssumeRole
+      Policies:
+      - PolicyName: CouchbaseSecretPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - secretsmanager:GetSecretValue
+            Resource:
+            - Ref: CouchbaseSecret
+      RoleName:
+        Fn::Join:
+        - "-"
+        - - CB-Access
+          - Ref: ChildAccountId
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/SecurityAudit
