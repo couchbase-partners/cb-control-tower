@@ -76,11 +76,7 @@ Resources:
         - ParameterKey: ParentAccountId
           ParameterValue: SomeValue
       PermissionModel: SELF_MANAGED
-      AdministrationRoleARN: !Join
-        - ':'
-        - - 'arn:aws:iam:'
-          - !Ref 'AWS::AccountId'
-          - role/service-role/AWSControlTowerStackSetRole
+      AdministrationRoleARN: !Join [':', ['arn:aws:iam:', !Ref 'AWS::AccountId', 'role/service-role/AWSControlTowerStackSetRole']]
       ExecutionRoleName: AWSControlTowerExecution
       Capabilities:
         - CAPABILITY_NAMED_IAM
