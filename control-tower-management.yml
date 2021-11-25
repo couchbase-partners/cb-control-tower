@@ -98,11 +98,7 @@ Resources:
         - ParameterKey: CouchbaseSecretArn
           ParameterValue: SomeValue
       PermissionModel: SELF_MANAGED
-      AdministrationRoleARN: !Join
-        - ':'
-        - - 'arn:aws:iam:'
-          - !Ref 'AWS::AccountId'
-          - role/service-role/AWSControlTowerStackSetRole
+      AdministrationRoleARN: !Join [':', ['arn:aws:iam:', !Ref 'AWS::AccountId', 'role/service-role/AWSControlTowerStackSetRole']]
       ExecutionRoleName: AWSControlTowerExecution
       Capabilities:
         - CAPABILITY_NAMED_IAM
@@ -303,13 +299,13 @@ Resources:
                     - - arn:aws:cloudformation
                       - !Ref 'AWS::Region'
                       - !Ref 'AWS::AccountId'
-                      - stackset/MemberRolev1:*
+                      - stackset/CB-MemberStackSet:*
                   - !Join
                     - ':'
                     - - arn:aws:cloudformation
                       - !Ref 'AWS::Region'
                       - !Ref 'AWS::AccountId'
-                      - stackset/MainRolev1:*
+                      - stackset/CB-SharedServicesStackSet:*
       ManagedPolicyArns:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess'
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
