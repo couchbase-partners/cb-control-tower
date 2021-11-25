@@ -30,4 +30,4 @@ The Couchbase integration with AWS Control Tower is set up in one step. Launch t
       - Navigate to the AWS CloudFormation console. Check that there is an AWS CloudFormation stack instance in this account that that launches the Couchbase IAM integration role in the managed account From the navigation pane, select this stack instance and choose Stack info. The status field should display a value of CREATE_COMPLETE.
 
 4. **Validate**
-    - Log into your Couchbase Server Cluster Administrative Webpage at [http://<ClusterAdminURL>:8091](http://<ClusterAdminURL>:8091) and go to the Security tab to view the created user for the managed account
+    - Log into your Couchbase Server Cluster Administrative Webpage at [http://ClusterAdminURL:8091](http://ClusterAdminURL:8091) and go to the Security tab to view the created user for the managed account
